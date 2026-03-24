@@ -1,0 +1,20 @@
+# Managed by Ansible — do not edit manually
+# DHCP server for LAN clients on {{ lan_interface }}
+
+interface={{ lan_interface }}
+bind-interfaces
+except-interface=lo
+
+# DHCP pool
+dhcp-range={{ dhcp_range_start }},{{ dhcp_range_end }},{{ dhcp_lease_time }}
+
+# Gateway and DNS for clients
+dhcp-option=option:router,{{ lan_ip }}
+dhcp-option=option:dns-server,{{ dhcp_dns_server }}
+
+# Don't read /etc/hosts or /etc/resolv.conf for upstream DNS
+no-resolv
+server={{ dhcp_dns_server }}
+
+# Log DHCP leases
+log-dhcp

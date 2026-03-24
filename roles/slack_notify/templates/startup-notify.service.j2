@@ -1,0 +1,12 @@
+[Unit]
+Description=Send Slack notification when garage Pi comes online
+After=network-online.target twingate-connector.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {{ ups_script_path }} --startup
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

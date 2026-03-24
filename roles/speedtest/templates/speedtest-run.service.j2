@@ -1,0 +1,10 @@
+[Unit]
+Description=Run hourly speedtest and record result
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart={{ speedtest_run_script }}
+StandardOutput=journal
+StandardError=journal

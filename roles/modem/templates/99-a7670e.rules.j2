@@ -1,0 +1,6 @@
+# Waveshare A7670E Cat-1 HAT
+# - Block ModemManager from managing this device (it resets modem settings)
+# - Trigger RNDIS init script on hotplug
+SUBSYSTEM=="usb", ATTRS{idVendor}=="{{ modem_vid }}", ATTRS{idProduct}=="{{ modem_pid }}", \
+  ENV{ID_MM_DEVICE_IGNORE}="1", \
+  RUN+="{{ init_script_path }}"

@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Send a Slack notification via incoming webhook.
+
+Usage: slack_notify.py <message>
+Config: reads SLACK_WEBHOOK_URL from {{ slack_env_path }}
+"""
+
+import os
+import sys
+
+
+def _load_env(path: str) -> dict:
+    env = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    env[key.strip()] = value.strip()
+    except OSError as exc:
+        raise SystemExit(f"Cannot read {path}: {exc}") from exc
+    return env
+
+
+def send(message: str) -> None:
+    import requests  # noqa: PLC0415
+
+    env = _load_env("{{ slack_env_path }}")
+    webhook_url = env.get("SLACK_WEBHOOK_URL", "")
+    if not webhook_url:
+        raise SystemExit("SLACK_WEBHOOK_URL not set in {{ slack_env_path }}")
+
+    resp = requests.post(webhook_url, json={"text": message}, timeout=10)
+    if not resp.ok:
+        raise SystemExit(f"Slack returned {resp.status_code}: {resp.text}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: slack_notify.py <message>")
+    send(sys.argv[1])

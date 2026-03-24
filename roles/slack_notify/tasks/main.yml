@@ -1,0 +1,45 @@
+---
+- name: Assert slack_webhook_url is set
+  ansible.builtin.assert:
+    that: slack_webhook_url | length > 0
+    fail_msg: "slack_webhook_url must be set — pass it via secrets.yml (-e @secrets.yml)"
+
+- name: Install python3-requests
+  ansible.builtin.apt:
+    name: python3-requests
+    state: present
+    update_cache: false
+
+- name: Deploy slack_notify script
+  ansible.builtin.template:
+    src: slack_notify.py.j2
+    dest: "{{ slack_notify_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy slack.env (webhook URL)
+  ansible.builtin.template:
+    src: slack.env.j2
+    dest: "{{ slack_env_path }}"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Deploy startup-notify systemd service
+  ansible.builtin.template:
+    src: startup-notify.service.j2
+    dest: /etc/systemd/system/startup-notify.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable startup-notify service
+  ansible.builtin.systemd:
+    name: startup-notify.service
+    enabled: true
+    state: started

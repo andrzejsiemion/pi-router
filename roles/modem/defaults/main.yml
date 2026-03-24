@@ -1,0 +1,16 @@
+---
+modem_vid: "1e0e"
+modem_pid: "9011"
+modem_tty: /dev/ttyUSB1
+modem_interface: usb0
+lan_interface: eth0
+lan_ip: 192.168.10.1
+lan_subnet: 192.168.10.0/24
+lan_prefix: 24
+lte_apn: internet
+lte_operator: "Orange Poland"
+
+udev_rules_path: /etc/udev/rules.d/99-a7670e.rules
+init_script_path: /usr/local/sbin/a7670e-init.sh
+nm_connection_dir: /etc/NetworkManager/system-connections
+signal_monitor_path: /usr/local/bin/signal-monitor

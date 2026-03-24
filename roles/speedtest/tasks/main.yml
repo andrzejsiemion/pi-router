@@ -1,0 +1,90 @@
+---
+- name: Create speedtest results directory
+  ansible.builtin.file:
+    path: "{{ speedtest_results_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pull speedtest Docker image
+  community.docker.docker_image:
+    name: "{{ speedtest_docker_image }}"
+    source: pull
+
+- name: Deploy speed command
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      docker run --rm --network host {{ speedtest_docker_image }} speedtest --accept-license --accept-gdpr 2>/dev/null | grep -E '^\s*(Download|Upload):'
+    dest: /usr/local/bin/speed
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy speedtest run script
+  ansible.builtin.template:
+    src: speedtest-run.sh.j2
+    dest: "{{ speedtest_run_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy speedtest report script
+  ansible.builtin.template:
+    src: speedtest_report.py.j2
+    dest: "{{ speedtest_report_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy speedtest-run systemd service
+  ansible.builtin.template:
+    src: speedtest-run.service.j2
+    dest: /etc/systemd/system/speedtest-run.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Deploy speedtest-run systemd timer
+  ansible.builtin.template:
+    src: speedtest-run.timer.j2
+    dest: /etc/systemd/system/speedtest-run.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Deploy speedtest-report systemd service
+  ansible.builtin.template:
+    src: speedtest-report.service.j2
+    dest: /etc/systemd/system/speedtest-report.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Deploy speedtest-report systemd timer
+  ansible.builtin.template:
+    src: speedtest-report.timer.j2
+    dest: /etc/systemd/system/speedtest-report.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start speedtest-run timer
+  ansible.builtin.systemd:
+    name: speedtest-run.timer
+    enabled: true
+    state: started
+
+- name: Enable and start speedtest-report timer
+  ansible.builtin.systemd:
+    name: speedtest-report.timer
+    enabled: true
+    state: started

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Triggered by udev on A7670E hotplug.
+# Switches the modem from GSM to RNDIS (USB ethernet) mode.
+# Must be non-interactive: udev environment has no stdin/stdout terminal.
+set -euo pipefail
+
+TTY="{{ modem_tty }}"
+
+if [[ ! -c "$TTY" ]]; then
+    logger -t a7670e-init "TTY $TTY not found, skipping"
+    exit 0
+fi
+
+# Give the modem a moment to finish enumeration before sending AT commands
+sleep 1
+
+stty -F "$TTY" 115200 raw -echo
+
+# Switch to RNDIS mode (USB ethernet instead of GSM serial)
+printf 'AT+DIALMODE=0\r' > "$TTY"
+sleep 1
+
+# Set USB network mode to RNDIS
+printf 'AT$MYCONFIG="usbnetmode",0\r' > "$TTY"
+sleep 2
+
+logger -t a7670e-init "Modem RNDIS init complete on $TTY"

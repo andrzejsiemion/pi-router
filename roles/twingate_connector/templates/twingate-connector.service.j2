@@ -1,0 +1,19 @@
+[Unit]
+Description=Twingate Connector
+After=network-online.target
+Wants=network-online.target
+# Stop and restart automatically when usb0 disappears/reappears (modem reset)
+BindsTo=sys-subsystem-net-devices-{{ twingate_bind_interface }}.device
+After=sys-subsystem-net-devices-{{ twingate_bind_interface }}.device
+
+[Service]
+Type=simple
+EnvironmentFile={{ twingate_env_path }}
+ExecStart={{ twingate_binary_path }}
+Restart=on-failure
+RestartSec={{ twingate_watchdog_interval }}
+StandardOutput=append:{{ twingate_log_path }}
+StandardError=append:{{ twingate_log_path }}
+
+[Install]
+WantedBy=multi-user.target

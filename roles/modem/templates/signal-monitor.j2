@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# signal-monitor — query A7670E modem signal status via AT commands
+# Usage: signal-monitor [--raw]
+set -euo pipefail
+
+TTY="{{ modem_tty }}"
+TIMEOUT=3
+
+if [[ ! -c "$TTY" ]]; then
+    echo "ERROR: Modem TTY $TTY not found" >&2
+    exit 1
+fi
+
+# Send an AT command and read the response
+at_cmd() {
+    local cmd="$1"
+    stty -F "$TTY" 115200 raw -echo 2>/dev/null
+    printf '%s\r' "$cmd" > "$TTY"
+    sleep 0.5
+    timeout "$TIMEOUT" cat "$TTY" 2>/dev/null | tr -d '\r' | grep -v '^$' | head -5 || true
+}
+
+echo "=== A7670E Signal Monitor ==="
+echo ""
+
+# Signal quality (RSSI + BER)
+echo "Signal Quality (AT+CSQ):"
+CSQ=$(at_cmd "AT+CSQ")
+echo "  $CSQ"
+
+# Parse RSSI value
+RSSI_RAW=$(echo "$CSQ" | grep -oP '(?<=\+CSQ: )\d+' || echo "99")
+if [[ "$RSSI_RAW" -eq 99 ]]; then
+    RSSI_DBM="unknown"
+elif [[ "$RSSI_RAW" -eq 0 ]]; then
+    RSSI_DBM="-113 dBm or less"
+elif [[ "$RSSI_RAW" -eq 31 ]]; then
+    RSSI_DBM="-51 dBm or greater"
+else
+    RSSI_DBM="$(( -113 + RSSI_RAW * 2 )) dBm"
+fi
+echo "  RSSI: $RSSI_DBM"
+echo ""
+
+# Registration status
+echo "Network Registration (AT+CREG?):"
+at_cmd "AT+CREG?" | sed 's/^/  /'
+echo ""
+
+# Operator info
+echo "Operator (AT+COPS?):"
+at_cmd "AT+COPS?" | sed 's/^/  /'
+echo ""
+
+# Network type / band info
+echo "Network Info (AT+CPSI?):"
+at_cmd "AT+CPSI?" | sed 's/^/  /'

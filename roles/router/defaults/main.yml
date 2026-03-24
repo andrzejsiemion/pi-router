@@ -1,0 +1,15 @@
+---
+# Inherited from modem role — override here if needed
+lan_interface: eth0
+lan_ip: 192.168.10.1
+lan_subnet: 192.168.10.0/24
+lan_prefix: 24
+modem_interface: usb0
+
+dhcp_range_start: 192.168.10.100
+dhcp_range_end:   192.168.10.200
+dhcp_lease_time:  24h
+dhcp_dns_server:  8.8.8.8
+
+nftables_conf_path: /etc/nftables.conf
+dnsmasq_conf_path:  /etc/dnsmasq.d/eth0-lan.conf

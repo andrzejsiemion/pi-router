@@ -1,0 +1,15 @@
+[connection]
+id=usb0-lte
+uuid={{ 'usb0-lte' | to_uuid }}
+type=ethernet
+interface-name={{ modem_interface }}
+autoconnect=true
+
+[ethernet]
+
+[ipv4]
+method=auto
+route-metric=50
+
+[ipv6]
+method=ignore

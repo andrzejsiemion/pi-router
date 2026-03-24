@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Daily speedtest report — reads JSONL results, sends Slack summary, clears file."""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+RESULTS_FILE = Path("{{ speedtest_results_file }}")
+SLACK_NOTIFY = "{{ slack_notify_script_path }}"
+
+
+def mbps(bytesps: float) -> float:
+    """Convert bytes/sec (Ookla format) to Mbps."""
+    return round(bytesps * 8 / 1_000_000, 1)
+
+
+def stats(values: list) -> tuple[float, float, float]:
+    return min(values), round(sum(values) / len(values), 1), max(values)
+
+
+def main() -> None:
+    if not RESULTS_FILE.exists() or RESULTS_FILE.stat().st_size == 0:
+        print("[speedtest-report] No results to report", file=sys.stderr)
+        return
+
+    records = []
+    for line in RESULTS_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            print(f"[speedtest-report] Skipping malformed line: {exc}", file=sys.stderr)
+
+    if not records:
+        print("[speedtest-report] No valid records found", file=sys.stderr)
+        return
+
+    # Ookla JSON: download.bandwidth / upload.bandwidth in bytes/sec, ping.latency in ms
+    downloads = [mbps(r["download"]["bandwidth"]) for r in records if "download" in r]
+    uploads   = [mbps(r["upload"]["bandwidth"])   for r in records if "upload"   in r]
+    pings     = [r["ping"]["latency"]             for r in records if "ping"     in r]
+
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    n = len(records)
+    lines = [f"[{ts}] garage speedtest — {n} readings"]
+
+    if downloads:
+        lo, avg, hi = stats(downloads)
+        lines.append(f"Download  min {lo} / avg {avg} / max {hi} Mbps")
+
+    if uploads:
+        lo, avg, hi = stats(uploads)
+        lines.append(f"Upload    min {lo} / avg {avg} / max {hi} Mbps")
+
+    if pings:
+        lo, avg, hi = stats([round(p, 1) for p in pings])
+        lines.append(f"Ping      min {lo} / avg {avg} / max {hi} ms")
+
+    message = "\n".join(lines)
+    print(f"[speedtest-report] Sending:\n{message}")
+
+    try:
+        subprocess.run([sys.executable, SLACK_NOTIFY, message], check=True, timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[speedtest-report] Slack notify failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Clear file for the next day's measurements
+    RESULTS_FILE.write_text("")
+    print("[speedtest-report] Results file cleared")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,10 @@
+---
+- name: reload udev
+  ansible.builtin.command: udevadm control --reload-rules
+  notify: trigger udev
+
+- name: trigger udev
+  ansible.builtin.command: udevadm trigger
+
+- name: reload NetworkManager
+  ansible.builtin.command: nmcli connection reload

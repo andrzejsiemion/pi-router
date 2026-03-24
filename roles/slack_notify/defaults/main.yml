@@ -1,0 +1,5 @@
+---
+slack_notify_script_path: /usr/local/lib/slack_notify.py
+slack_env_path: /etc/slack.env
+slack_webhook_url: ""  # override via secrets.yml
+ups_script_path: /usr/local/lib/ups_monitor.py  # must match waveshare_ups default

@@ -1,0 +1,144 @@
+---
+# ── Phase 1: Packages ─────────────────────────────────────────────────────────
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - network-manager
+      - nftables
+      - usbutils
+      - modemmanager
+      - python3-serial
+    state: present
+    update_cache: true
+
+# ── Phase 2: udev rule and hotplug init script ────────────────────────────────
+
+- name: Deploy A7670E init script
+  ansible.builtin.template:
+    src: a7670e-init.sh.j2
+    dest: "{{ init_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy udev rule (blocks ModemManager, triggers RNDIS init on hotplug)
+  ansible.builtin.template:
+    src: 99-a7670e.rules.j2
+    dest: "{{ udev_rules_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload udev
+
+- name: Flush handlers to reload udev rules
+  ansible.builtin.meta: flush_handlers
+
+# ── Phase 3: Switch modem to RNDIS if usb0 is not already up ─────────────────
+
+- name: Check if {{ modem_interface }} interface exists
+  ansible.builtin.command: ip link show {{ modem_interface }}
+  register: usb0_check
+  ignore_errors: true
+  changed_when: false
+
+- name: Switch modem to RNDIS mode via AT commands
+  ansible.builtin.shell: |
+    set -e
+    stty -F {{ modem_tty }} 115200 raw -echo
+    printf 'AT+DIALMODE=0\r' > {{ modem_tty }}
+    sleep 1
+    printf 'AT$MYCONFIG="usbnetmode",0\r' > {{ modem_tty }}
+    sleep 2
+  when: usb0_check.rc != 0
+
+- name: Trigger udev to enumerate USB devices after mode switch
+  ansible.builtin.command: udevadm trigger --subsystem-match=usb
+  when: usb0_check.rc != 0
+
+- name: Wait for {{ modem_interface }} to appear (up to 20 seconds)
+  ansible.builtin.shell: |
+    for i in $(seq 1 20); do
+      ip link show {{ modem_interface }} && exit 0
+      sleep 1
+    done
+    echo "Timed out waiting for {{ modem_interface }}"
+    exit 1
+  when: usb0_check.rc != 0
+  changed_when: false
+
+# ── Phase 4: Verify ModemManager has NOT grabbed the device ──────────────────
+
+- name: Check ModemManager modem list
+  ansible.builtin.command: mmcli --list-modems
+  register: mm_list
+  ignore_errors: true
+  changed_when: false
+
+- name: Fail if ModemManager is managing the A7670E
+  ansible.builtin.fail:
+    msg: >
+      ModemManager has grabbed the A7670E modem (VID {{ modem_vid }}).
+      Check that the udev rule {{ udev_rules_path }} is in place and
+      run: udevadm control --reload-rules && udevadm trigger
+  when:
+    - mm_list.rc == 0
+    - modem_vid in mm_list.stdout
+
+# ── Phase 5: NetworkManager connection for usb0 ───────────────────────────────
+
+- name: Deploy NM connection profile for {{ modem_interface }}
+  ansible.builtin.template:
+    src: usb0.nmconnection.j2
+    dest: "{{ nm_connection_dir }}/usb0.nmconnection"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: reload NetworkManager
+
+- name: Flush handlers to reload NM connection
+  ansible.builtin.meta: flush_handlers
+
+- name: Bring up {{ modem_interface }} connection
+  ansible.builtin.command: nmcli connection up usb0-lte
+  register: nm_up
+  changed_when: nm_up.rc == 0
+  ignore_errors: true
+
+- name: Verify {{ modem_interface }} has an IP address
+  ansible.builtin.command: ip addr show {{ modem_interface }}
+  register: usb0_ip
+  changed_when: false
+  failed_when: "'inet ' not in usb0_ip.stdout"
+
+# ── Phase 6: signal-monitor CLI ───────────────────────────────────────────────
+
+- name: Deploy signal-monitor CLI
+  ansible.builtin.template:
+    src: signal-monitor.j2
+    dest: "{{ signal_monitor_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy modem-poweroff systemd service
+  ansible.builtin.template:
+    src: modem-poweroff.service.j2
+    dest: /etc/systemd/system/modem-poweroff.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Enable modem-poweroff service
+  ansible.builtin.systemd:
+    name: modem-poweroff.service
+    enabled: true
+
+- name: Deploy gsm live signal TUI
+  ansible.builtin.template:
+    src: gsm.py.j2
+    dest: /usr/local/bin/gsm
+    owner: root
+    group: root
+    mode: "0755"

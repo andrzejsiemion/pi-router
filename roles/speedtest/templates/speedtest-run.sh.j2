@@ -1,0 +1,13 @@
+#!/bin/bash
+# Managed by Ansible — do not edit manually
+set -euo pipefail
+
+result=$(docker run --rm --network host {{ speedtest_docker_image }} speedtest --accept-license --accept-gdpr --format=json 2>/dev/null)
+
+if [ -z "$result" ]; then
+    echo "[speedtest-run] Empty output — speedtest may have failed" >&2
+    exit 1
+fi
+
+echo "$result" >> "{{ speedtest_results_file }}"
+echo "[speedtest-run] Result appended to {{ speedtest_results_file }}"

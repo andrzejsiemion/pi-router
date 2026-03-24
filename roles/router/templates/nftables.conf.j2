@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible — do not edit manually
+
+flush ruleset
+
+# ── NAT: masquerade LAN traffic going out through LTE uplink ─────────────────
+table inet nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat
+        oifname "{{ modem_interface }}" ip saddr {{ lan_subnet }} masquerade
+    }
+}
+
+# ── Filter: forward LAN ↔ LTE ─────────────────────────────────────────────────
+table inet filter {
+    chain forward {
+        type filter hook forward priority filter
+        policy drop
+
+        # New connections from LAN to internet
+        iifname "{{ lan_interface }}" oifname "{{ modem_interface }}" ct state new,established,related accept
+
+        # Return traffic from internet back to LAN
+        iifname "{{ modem_interface }}" oifname "{{ lan_interface }}" ct state established,related accept
+    }
+}

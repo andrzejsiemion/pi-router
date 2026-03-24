@@ -1,0 +1,7 @@
+---
+speedtest_docker_image: gists/speedtest-cli
+speedtest_results_dir: /var/lib/speedtest
+speedtest_results_file: /var/lib/speedtest/results.jsonl
+speedtest_run_script: /usr/local/lib/speedtest-run.sh
+speedtest_report_script: /usr/local/lib/speedtest_report.py
+slack_notify_script_path: /usr/local/lib/slack_notify.py  # must match slack_notify default

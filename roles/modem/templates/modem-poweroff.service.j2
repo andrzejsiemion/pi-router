@@ -1,0 +1,13 @@
+[Unit]
+Description=Power off A7670E modem before system shutdown
+DefaultDependencies=no
+Before=shutdown.target halt.target poweroff.target reboot.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'stty -F {{ modem_tty }} 115200 raw -echo && printf "AT+CPOF\r" > {{ modem_tty }}'
+TimeoutStartSec=10
+RemainAfterExit=yes
+
+[Install]
+WantedBy=halt.target poweroff.target reboot.target

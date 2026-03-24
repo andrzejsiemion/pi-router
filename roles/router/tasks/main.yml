@@ -1,0 +1,117 @@
+---
+# ── Mandatory confirmation ─────────────────────────────────────────────────────
+# This role switches eth0 from DHCP client to LAN server mode.
+# Direct SSH via eth0 will STOP WORKING after this role runs.
+# Only proceed once Twingate SSH through usb0 is confirmed working.
+- name: Confirm Twingate SSH is working before switching eth0 to router mode
+  ansible.builtin.pause:
+    prompt: >
+
+      ╔══════════════════════════════════════════════════════════════════════╗
+      ║  WARNING — eth0 SSH will be LOST after this role runs.              ║
+      ║                                                                      ║
+      ║  Before continuing, verify ALL of the following:                     ║
+      ║    1. ip addr show usb0      → has 192.168.0.x                      ║
+      ║    2. ping -c3 8.8.8.8 -I usb0  → succeeds                         ║
+      ║    3. systemctl is-active twingate-connector → active               ║
+      ║    4. SSH from external machine via Twingate → works                ║
+      ║                                                                      ║
+      ║  Type  yes  to proceed, anything else to abort                       ║
+      ╚══════════════════════════════════════════════════════════════════════╝
+
+  register: router_confirm
+
+- name: Abort if not confirmed
+  ansible.builtin.fail:
+    msg: "Router role aborted — type 'yes' to confirm Twingate SSH is working."
+  when: router_confirm.user_input | trim | lower != "yes"
+
+# ── Packages ───────────────────────────────────────────────────────────────────
+- name: Install dnsmasq and nftables
+  ansible.builtin.apt:
+    name:
+      - dnsmasq
+      - nftables
+    state: present
+    update_cache: false
+
+# ── sysctl: enable IP forwarding ──────────────────────────────────────────────
+- name: Enable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
+
+# ── nftables NAT + forwarding ─────────────────────────────────────────────────
+- name: Deploy nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: "{{ nftables_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload nftables
+
+- name: Enable and start nftables
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Flush handlers (apply nftables before NM change)
+  ansible.builtin.meta: flush_handlers
+
+# ── NetworkManager: eth0 → static LAN ────────────────────────────────────────
+- name: Deploy eth0 NM keyfile (static LAN)
+  ansible.builtin.template:
+    src: eth0.nmconnection.j2
+    dest: /etc/NetworkManager/system-connections/eth0.nmconnection
+    owner: root
+    group: root
+    mode: "0600"
+  notify: reload NetworkManager
+
+- name: Flush handlers (reload NM daemon before scanning keyfiles)
+  ansible.builtin.meta: flush_handlers
+
+- name: Reload NM connection list (re-scan keyfiles directory)
+  ansible.builtin.command:
+    cmd: nmcli connection reload
+  changed_when: false
+
+- name: Apply eth0 LAN connection
+  ansible.builtin.command:
+    cmd: nmcli connection up eth0-lan
+  changed_when: true
+  # eth0 SSH will drop here — that is expected
+
+# ── dnsmasq DHCP server ───────────────────────────────────────────────────────
+- name: Deploy dnsmasq config for eth0 LAN
+  ansible.builtin.template:
+    src: dnsmasq-eth0.conf.j2
+    dest: "{{ dnsmasq_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart dnsmasq
+
+- name: Enable and start dnsmasq
+  ansible.builtin.systemd:
+    name: dnsmasq
+    enabled: true
+    state: started
+
+- name: Flush handlers (apply dnsmasq config)
+  ansible.builtin.meta: flush_handlers
+
+# ── Final reminder ─────────────────────────────────────────────────────────────
+- name: Router role complete
+  ansible.builtin.debug:
+    msg: >
+      Router mode is active.
+      eth0 is now {{ lan_ip }}/{{ lan_prefix }} — direct eth0 SSH is gone.
+      LAN clients on eth0 will get DHCP from {{ dhcp_range_start }}–{{ dhcp_range_end }}.
+      Internet is masqueraded through {{ modem_interface }}.
+      Manage the Pi via Twingate SSH only.

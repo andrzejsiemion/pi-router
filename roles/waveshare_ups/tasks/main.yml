@@ -1,0 +1,140 @@
+---
+- name: Install I2C and Python packages
+  ansible.builtin.apt:
+    name:
+      - python3-smbus
+      - i2c-tools
+      - python3-pip
+    state: present
+    update_cache: true
+
+- name: Enable I2C overlay in /boot/firmware/config.txt
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/config.txt
+    line: "dtparam=i2c_arm=on"
+    regexp: "^#?dtparam=i2c_arm"
+    state: present
+  register: i2c_config_changed
+
+- name: Halt if I2C was just enabled (reboot required)
+  ansible.builtin.fail:
+    msg: >
+      I2C was just enabled in /boot/firmware/config.txt.
+      Please reboot the Pi and re-run the playbook:
+        sudo reboot
+        ansible-playbook pi-router.yml -e @secrets.yml
+  when: i2c_config_changed.changed
+
+- name: Ensure i2c-dev module loads at boot
+  ansible.builtin.copy:
+    content: "i2c-dev\n"
+    dest: /etc/modules-load.d/i2c-dev.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Load i2c-dev module now
+  community.general.modprobe:
+    name: i2c-dev
+    state: present
+
+- name: Ensure POWER_OFF_ON_HALT=0 in Pi 5 EEPROM (PMIC stays in low-power state on halt, RTC keeps ticking)
+  ansible.builtin.shell: |
+    set -e
+    tmpconf=$(mktemp)
+    rpi-eeprom-config > "$tmpconf"
+    if grep -q '^POWER_OFF_ON_HALT=0' "$tmpconf"; then
+      rm -f "$tmpconf"
+      exit 0
+    fi
+    if grep -q '^POWER_OFF_ON_HALT' "$tmpconf"; then
+      sed -i 's/^POWER_OFF_ON_HALT=.*/POWER_OFF_ON_HALT=0/' "$tmpconf"
+    else
+      echo 'POWER_OFF_ON_HALT=0' >> "$tmpconf"
+    fi
+    rpi-eeprom-config --apply "$tmpconf"
+    rm -f "$tmpconf"
+    echo "UPDATED"
+  register: eeprom_result
+  changed_when: "'UPDATED' in eeprom_result.stdout"
+
+- name: Remind operator to reboot for EEPROM change to take effect
+  ansible.builtin.debug:
+    msg: >
+      EEPROM updated (POWER_OFF_ON_HALT=0 — RTC stays powered during halt so wake alarm fires).
+      Reboot the Pi for this to take effect: sudo reboot
+  when: eeprom_result.changed
+
+- name: Install smbus2 via pip
+  ansible.builtin.pip:
+    name: smbus2
+    state: present
+    executable: pip3
+    extra_args: "--break-system-packages"
+
+- name: Create UPS state directory
+  ansible.builtin.file:
+    path: "{{ ups_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy battery status command
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      exec python3 {{ ups_script_path }} --status
+    dest: /usr/local/bin/battery
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy UPS monitor script
+  ansible.builtin.template:
+    src: ups_monitor.py.j2
+    dest: "{{ ups_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy ups-boot-check systemd service
+  ansible.builtin.template:
+    src: ups-boot-check.service.j2
+    dest: /etc/systemd/system/ups-boot-check.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Deploy ups-monitor systemd service
+  ansible.builtin.template:
+    src: ups-monitor.service.j2
+    dest: /etc/systemd/system/ups-monitor.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Deploy ups-monitor systemd timer
+  ansible.builtin.template:
+    src: ups-monitor.timer.j2
+    dest: /etc/systemd/system/ups-monitor.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Flush handlers to reload systemd before enabling timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable ups-boot-check service
+  ansible.builtin.systemd:
+    name: ups-boot-check.service
+    enabled: true
+
+- name: Enable and start ups-monitor timer
+  ansible.builtin.systemd:
+    name: ups-monitor.timer
+    enabled: true
+    state: started

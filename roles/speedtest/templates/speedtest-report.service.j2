@@ -1,0 +1,8 @@
+[Unit]
+Description=Send daily speedtest Slack report
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {{ speedtest_report_script }}
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run UPS HAT monitor every {{ ups_check_interval_sec }} seconds
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec={{ ups_check_interval_sec }}
+Unit=ups-monitor.service
+
+[Install]
+WantedBy=timers.target

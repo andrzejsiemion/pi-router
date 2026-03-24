@@ -1,0 +1,13 @@
+---
+ups_i2c_bus: 1
+ups_i2c_address: "0x42"
+ups_battery_warn_thresholds: [50, 25, 10]  # percent — sends one notification per level as battery drops
+ups_critical_battery_threshold: 25         # percent — triggers shutdown
+ups_check_interval_sec: 30
+ups_current_deadband: 0.1           # amps — negative current below this = on battery (discharging)
+ups_battery_confirm_count: 2        # consecutive on-battery readings before sending alert
+ups_rtc_wake_interval_sec: 300      # seconds — Pi wakes itself to check if AC is back after shutdown
+
+ups_script_path: /usr/local/lib/ups_monitor.py
+ups_state_dir: /var/lib/ups-monitor
+ups_service_name: ups-monitor

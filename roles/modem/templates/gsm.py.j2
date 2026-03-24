@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Live GSM/LTE signal monitor for A7670E modem.
+
+Walk around with the antenna to find the best spot.
+Press q to quit.
+"""
+import curses
+import re
+import sys
+import time
+
+try:
+    import serial
+except ImportError:
+    sys.exit("pyserial not installed — run: pip3 install pyserial")
+
+MODEM_TTY = "{{ modem_tty }}"
+BAUD = 115200
+POLL_INTERVAL = 1.0
+
+
+# ── AT helpers ────────────────────────────────────────────────────────────────
+
+def send_at(ser: serial.Serial, cmd: str) -> str:
+    ser.reset_input_buffer()
+    ser.write((cmd + "\r\n").encode())
+    time.sleep(0.2)
+    return ser.read(ser.in_waiting).decode(errors="ignore")
+
+
+def parse_csq(response: str) -> int | None:
+    """Return dBm from AT+CSQ response, or None if unavailable."""
+    m = re.search(r'\+CSQ:\s*(\d+),', response)
+    if not m:
+        return None
+    rssi = int(m.group(1))
+    if rssi == 99:
+        return None
+    return -113 + rssi * 2
+
+
+def parse_cpsi(response: str) -> dict:
+    """Parse AT+CPSI? into a dict with tech, status, operator, band."""
+    info = {}
+    m = re.search(r'\+CPSI:\s*([^,\r\n]+),([^,\r\n]+),([^,\r\n]+)', response)
+    if m:
+        info["tech"]     = m.group(1).strip()
+        info["status"]   = m.group(2).strip()
+        info["operator"] = m.group(3).strip()
+    # Band field (position 7 in the CSV)
+    parts = re.sub(r'\+CPSI:\s*', '', response).split(',')
+    if len(parts) >= 7:
+        info["band"] = parts[6].strip()
+    return info
+
+
+# ── Display helpers ───────────────────────────────────────────────────────────
+
+BAR_CHARS = "░▒█"
+BAR_WIDTH = 30
+
+
+def signal_bar(dbm: int | None) -> str:
+    if dbm is None:
+        return "─" * BAR_WIDTH
+    pct = max(0.0, min(1.0, (dbm - (-113)) / (-51 - (-113))))
+    filled = int(pct * BAR_WIDTH)
+    return "█" * filled + "░" * (BAR_WIDTH - filled)
+
+
+def signal_label(dbm: int | None) -> str:
+    if dbm is None: return "No signal"
+    if dbm >= -65:  return "Excellent"
+    if dbm >= -75:  return "Good     "
+    if dbm >= -85:  return "Fair     "
+    if dbm >= -95:  return "Poor     "
+    return              "Very poor"
+
+
+def color_pair(dbm: int | None) -> int:
+    if dbm is None or dbm < -95: return 3   # red
+    if dbm < -80:                return 2   # yellow
+    return                              1   # green
+
+
+# ── Main TUI ──────────────────────────────────────────────────────────────────
+
+def run(stdscr: curses.window) -> None:
+    curses.curs_set(0)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN,  -1)
+    curses.init_pair(2, curses.COLOR_YELLOW, -1)
+    curses.init_pair(3, curses.COLOR_RED,    -1)
+    curses.init_pair(4, curses.COLOR_CYAN,   -1)
+    stdscr.nodelay(True)
+
+    try:
+        ser = serial.Serial(MODEM_TTY, BAUD, timeout=1)
+    except serial.SerialException as exc:
+        curses.endwin()
+        sys.exit(f"Cannot open {MODEM_TTY}: {exc}")
+
+    best_dbm:  int | None = None
+    worst_dbm: int | None = None
+
+    while True:
+        if stdscr.getch() == ord('q'):
+            break
+
+        csq  = send_at(ser, "AT+CSQ")
+        cpsi = send_at(ser, "AT+CPSI?")
+
+        dbm  = parse_csq(csq)
+        info = parse_cpsi(cpsi)
+
+        if dbm is not None:
+            if best_dbm  is None or dbm > best_dbm:  best_dbm  = dbm
+            if worst_dbm is None or dbm < worst_dbm: worst_dbm = dbm
+
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        cp = curses.color_pair
+
+        title = " GSM Signal Monitor  [q] quit "
+        stdscr.addstr(0, max(0, (w - len(title)) // 2), title,
+                      curses.A_BOLD | cp(4))
+
+        # Bar
+        bar = signal_bar(dbm)
+        stdscr.addstr(2, 2, "Signal  ", cp(4))
+        stdscr.addstr(2, 10, f"[{bar}]", cp(color_pair(dbm)))
+
+        # dBm + label
+        dbm_str = f"{dbm:4d} dBm" if dbm is not None else "  unknown"
+        stdscr.addstr(3, 2, "Level   ", cp(4))
+        stdscr.addstr(3, 10, dbm_str, cp(color_pair(dbm)) | curses.A_BOLD)
+        stdscr.addstr(3, 20, f"  {signal_label(dbm)}", cp(color_pair(dbm)))
+
+        # Best / worst
+        stdscr.addstr(5, 2, "Best    ", cp(4))
+        stdscr.addstr(5, 10,
+            f"{best_dbm:4d} dBm" if best_dbm is not None else "  ——",
+            cp(1) | curses.A_BOLD)
+
+        stdscr.addstr(6, 2, "Worst   ", cp(4))
+        stdscr.addstr(6, 10,
+            f"{worst_dbm:4d} dBm" if worst_dbm is not None else "  ——",
+            cp(3))
+
+        # Network info
+        if info:
+            stdscr.addstr(8,  2, "Network ", cp(4))
+            stdscr.addstr(8,  10, info.get("tech", ""))
+            stdscr.addstr(9,  2, "Status  ", cp(4))
+            stdscr.addstr(9,  10, info.get("status", ""))
+            stdscr.addstr(10, 2, "Band    ", cp(4))
+            stdscr.addstr(10, 10, info.get("band", ""))
+
+        stdscr.refresh()
+        time.sleep(POLL_INTERVAL)
+
+    ser.close()
+
+
+if __name__ == "__main__":
+    curses.wrapper(run)

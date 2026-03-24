@@ -1,0 +1,13 @@
+[Unit]
+Description=UPS HAT boot check — halt if AC not restored after critical shutdown
+DefaultDependencies=no
+After=local-fs.target
+Before=network.target sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart={{ ups_script_path }} --boot-check
+RemainAfterExit=no
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Waveshare UPS HAT (INA219) monitor.
+
+Sends Slack notifications:
+  1. Device up           — handled by startup-notify.service, not this script
+  2. Powering off        — battery critical, initiates graceful shutdown
+  3. AC power off        — mains disconnected, running on battery
+  4. AC power on         — mains restored
+  5-7. Battery at 50/25/10% — one notification per threshold as battery drops
+
+State is persisted in {{ ups_state_dir }}/state.json to require
+{{ ups_battery_confirm_count }} consecutive readings before alerting
+and to suppress duplicate alerts until the condition clears.
+"""
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    import smbus2
+except ImportError:
+    sys.exit("smbus2 not installed — run: pip3 install smbus2")
+
+# ── Configuration (rendered by Ansible) ──────────────────────────────────────
+I2C_BUS = {{ ups_i2c_bus }}
+I2C_ADDR = {{ ups_i2c_address }}
+WARN_THRESHOLDS = [{{ ups_battery_warn_thresholds | join(', ') }}]  # percent — descending notifications
+CRITICAL_THRESHOLD = {{ ups_critical_battery_threshold }}           # percent — shutdown
+CURRENT_DEADBAND = {{ ups_current_deadband }}                       # amps
+CONFIRM_COUNT = {{ ups_battery_confirm_count }}
+RTC_WAKE_INTERVAL = {{ ups_rtc_wake_interval_sec }}
+SLACK_NOTIFY = "{{ slack_notify_script_path }}"
+STATE_FILE = Path("{{ ups_state_dir }}/state.json")
+RTC_WAKEALARM = Path("/sys/class/rtc/rtc0/wakealarm")
+
+# ── INA219 register addresses ─────────────────────────────────────────────────
+REG_CONFIG      = 0x00
+REG_BUS_V       = 0x02
+REG_CURRENT     = 0x04
+REG_CALIBRATION = 0x05
+
+# 16V range, gain /2 (80 mV), 12-bit 32-sample averaging, continuous shunt+bus
+# Matches Waveshare UPS HAT reference (INA219.py set_calibration_16V_5A)
+INA219_CONFIG = 0x0EEF
+INA219_CAL    = 26868   # for 0.01 Ω shunt resistor
+CURRENT_LSB   = 0.1524  # mA per bit
+
+
+def read_ina219(bus: smbus2.SMBus) -> tuple[float, float]:
+    """Return (bus_voltage_V, current_A)."""
+    bus.write_word_data(I2C_ADDR, REG_CONFIG,      _swap16(INA219_CONFIG))
+    bus.write_word_data(I2C_ADDR, REG_CALIBRATION, _swap16(INA219_CAL))
+
+    raw_bus = _swap16(bus.read_word_data(I2C_ADDR, REG_BUS_V))
+    bus_v = (raw_bus >> 3) * 0.004  # 4 mV per LSB
+
+    raw_current = _swap16(bus.read_word_data(I2C_ADDR, REG_CURRENT))
+    if raw_current > 32767:
+        raw_current -= 65536
+    current_a = (raw_current * CURRENT_LSB) / 1000.0
+
+    return bus_v, current_a
+
+
+def _swap16(value: int) -> int:
+    return ((value & 0xFF) << 8) | ((value >> 8) & 0xFF)
+
+
+def estimate_soc(voltage: float) -> float:
+    """Rough SoC % from 2-cell (2S) LiPo pack voltage (6.0–8.4 V)."""
+    return round(max(0.0, min(100.0, (voltage - 6.0) / (8.4 - 6.0) * 100)), 1)
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    state = {
+        "on_battery_count": 0,
+        "on_battery_alert_sent": False,
+        "critical_count": 0,
+        "critical_alert_sent": False,
+    }
+    for t in WARN_THRESHOLDS:
+        state[f"warn_{t}_sent"] = False
+    return state
+
+
+def save_state(state: dict) -> None:
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _ts() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def notify(message: str) -> None:
+    stamped = f"[{_ts()}] {message}"
+    try:
+        subprocess.run([sys.executable, SLACK_NOTIFY, stamped], check=True, timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ups-monitor] Slack notify failed: {exc}", file=sys.stderr)
+
+
+def set_rtc_wake(seconds: int) -> None:
+    """Schedule RTC wake so the Pi checks again after shutdown.
+    Requires POWER_OFF_ON_HALT=0 in EEPROM (set by Ansible) so the
+    RTC stays powered during halt. On wake: if AC is back, Pi stays up;
+    if still critical, it shuts down again and reschedules.
+    """
+    try:
+        RTC_WAKEALARM.write_text(f"+{seconds}\n")
+        print(f"[ups-monitor] RTC wake alarm set: +{seconds}s", file=sys.stderr)
+    except OSError as exc:
+        print(f"[ups-monitor] RTC wake alarm failed: {exc}", file=sys.stderr)
+
+
+def shutdown(reason: str) -> None:
+    notify(reason)
+    set_rtc_wake(RTC_WAKE_INTERVAL)
+    subprocess.run(["systemctl", "halt"], check=False)
+
+
+def main() -> None:
+    state = load_state()
+
+    try:
+        with smbus2.SMBus(I2C_BUS) as bus:
+            voltage, current = read_ina219(bus)
+    except OSError as exc:
+        print(f"[ups-monitor] I2C read failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Negative current = discharging (on battery). Positive/zero = AC present.
+    on_battery = current < -CURRENT_DEADBAND
+
+    # SoC is only meaningful when discharging — charger applies full voltage
+    # (~8.4V) regardless of actual capacity, making the reading useless on AC.
+    soc = estimate_soc(voltage) if on_battery else None
+
+    print(
+        f"[ups-monitor] voltage={voltage:.3f}V current={current:.3f}A "
+        f"soc≈{soc}% on_battery={on_battery}"
+    )
+
+    # ── Notification 2: Power off due to critical battery ─────────────────────
+    if on_battery and soc <= CRITICAL_THRESHOLD:
+        state["critical_count"] = state.get("critical_count", 0) + 1
+        if (
+            state["critical_count"] >= CONFIRM_COUNT
+            and not state.get("critical_alert_sent")
+        ):
+            state["critical_alert_sent"] = True
+            save_state(state)
+            shutdown(f"garage shutdown — {soc}% ({voltage:.2f}V) battery")
+            return  # systemctl poweroff is running
+    else:
+        if state.get("critical_alert_sent"):
+            notify(f"garage AC on — {voltage:.2f}V charging")
+        state["critical_alert_sent"] = False
+        state["critical_count"] = 0
+
+    # ── Notification 3 & 4: AC power off / AC power on ───────────────────────
+    if on_battery:
+        state["on_battery_count"] = state.get("on_battery_count", 0) + 1
+        if (
+            state["on_battery_count"] >= CONFIRM_COUNT
+            and not state.get("on_battery_alert_sent")
+        ):
+            notify(f"garage AC off — {soc}% ({voltage:.2f}V) battery")
+            state["on_battery_alert_sent"] = True
+    else:
+        if state.get("on_battery_alert_sent"):
+            # Notification 4: AC power on
+            notify(f"garage AC on — {voltage:.2f}V charging")
+        state["on_battery_count"] = 0
+        state["on_battery_alert_sent"] = False
+
+    # ── Notifications 5-7: Battery level warnings ────────────────────────────
+    # Only meaningful on battery — voltage is unreliable for SoC while charging.
+    for threshold in WARN_THRESHOLDS:
+        key = f"warn_{threshold}_sent"
+        if on_battery and soc <= threshold:
+            if not state.get(key):
+                notify(f"garage battery {soc}% ({voltage:.2f}V)")
+                state[key] = True
+        elif not on_battery or soc > threshold:
+            state[key] = False
+
+    save_state(state)
+
+
+def startup_notify() -> None:
+    """Read battery once and send the device-up Slack notification."""
+    try:
+        with smbus2.SMBus(I2C_BUS) as bus:
+            voltage, current = read_ina219(bus)
+        on_battery = current < -CURRENT_DEADBAND
+        if on_battery:
+            soc = estimate_soc(voltage)
+            notify(f"garage up — {soc}% ({voltage:.2f}V) battery")
+        else:
+            notify(f"garage up — {voltage:.2f}V charging")
+    except OSError as exc:
+        print(f"[ups-monitor] I2C read failed during startup: {exc}", file=sys.stderr)
+        notify("garage up")
+
+
+def status() -> None:
+    """Print current battery status to stdout — no notifications, no state changes."""
+    try:
+        with smbus2.SMBus(I2C_BUS) as bus:
+            voltage, current = read_ina219(bus)
+    except OSError as exc:
+        sys.exit(f"I2C read failed: {exc}")
+
+    on_battery = current < -CURRENT_DEADBAND
+    print(f"Voltage : {voltage:.2f} V")
+    print(f"Current : {current:+.3f} A  ({'discharging' if on_battery else 'charging'})")
+    print(f"Source  : {'battery' if on_battery else 'AC'}")
+    if on_battery:
+        soc = estimate_soc(voltage)
+        print(f"Battery : {soc}%")
+    else:
+        print("Battery : -- (not measurable while charging)")
+
+
+def boot_check() -> None:
+    """Run early in boot: halt again if AC is still not restored and battery is critical.
+
+    The UPS HAT keeps 5V on GPIO continuously, so the Pi reboots immediately
+    after halt. This service catches that case and re-halts until AC is back.
+    """
+    import time
+    try:
+        with smbus2.SMBus(I2C_BUS) as bus:
+            voltage, current = read_ina219(bus)
+    except OSError as exc:
+        print(f"[ups-boot-check] I2C read failed: {exc} — allowing boot", file=sys.stderr)
+        return
+
+    on_battery = current < -CURRENT_DEADBAND
+    soc = estimate_soc(voltage) if on_battery else None
+
+    print(
+        f"[ups-boot-check] voltage={voltage:.3f}V current={current:.3f}A "
+        f"soc={soc}% on_battery={on_battery}",
+        file=sys.stderr,
+    )
+
+    if on_battery and soc is not None and soc <= CRITICAL_THRESHOLD:
+        print(
+            f"[ups-boot-check] still critical ({soc}%) — halting again in 10s",
+            file=sys.stderr,
+        )
+        time.sleep(10)
+        subprocess.run(["systemctl", "halt"], check=False)
+    else:
+        print("[ups-boot-check] AC restored or battery OK — continuing boot", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--startup":
+        startup_notify()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--status":
+        status()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--boot-check":
+        boot_check()
+    else:
+        main()

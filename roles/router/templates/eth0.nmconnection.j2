@@ -1,0 +1,15 @@
+[connection]
+id=eth0-lan
+type=ethernet
+interface-name={{ lan_interface }}
+autoconnect=true
+
+[ethernet]
+
+[ipv4]
+method=manual
+addresses={{ lan_ip }}/{{ lan_prefix }}
+never-default=true
+
+[ipv6]
+method=disabled

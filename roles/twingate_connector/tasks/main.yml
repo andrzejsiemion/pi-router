@@ -1,0 +1,127 @@
+---
+# ── Phase 1: Validate prerequisites ──────────────────────────────────────────
+
+- name: Assert Twingate credentials are set
+  ansible.builtin.assert:
+    that:
+      - twingate_network | length > 0
+      - twingate_access_token | length > 0
+      - twingate_refresh_token | length > 0
+    fail_msg: >
+      Twingate credentials must be set.
+      Pass them via secrets.yml: twingate_network, twingate_access_token, twingate_refresh_token
+
+- name: Verify {{ twingate_bind_interface }} is up and has an IP address
+  ansible.builtin.command: ip addr show {{ twingate_bind_interface }}
+  register: usb0_addr
+  changed_when: false
+  failed_when: "'inet ' not in usb0_addr.stdout"
+
+# ── Phase 2: Add Twingate apt repository ─────────────────────────────────────
+
+- name: Download Twingate apt GPG key
+  ansible.builtin.get_url:
+    url: https://packages.twingate.com/apt/gpg.key
+    dest: /tmp/twingate-gpg.key
+    mode: "0644"
+
+- name: Dearmor and install Twingate GPG key
+  ansible.builtin.shell: |
+    gpg --dearmor < /tmp/twingate-gpg.key > /usr/share/keyrings/twingate-client-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/twingate-client-keyring.gpg
+
+- name: Add Twingate apt repository
+  ansible.builtin.copy:
+    content: "deb [signed-by=/usr/share/keyrings/twingate-client-keyring.gpg] https://packages.twingate.com/apt/ * *\n"
+    dest: /etc/apt/sources.list.d/twingate.list
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install twingate-connector package
+  ansible.builtin.apt:
+    name: twingate-connector
+    state: present
+    update_cache: true
+
+# ── Phase 3: Deploy credentials and start service ────────────────────────────
+
+- name: Create Twingate config directory
+  ansible.builtin.file:
+    path: "{{ twingate_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# ── Phase 3a: Loopback alias so Twingate resource 192.168.10.1 resolves on this Pi ──
+# The Twingate resource is configured as 192.168.10.1. Until the router role
+# assigns that IP to eth0, we need it on loopback so the connector can reach it.
+
+- name: Deploy loopback-alias systemd service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Add {{ lan_ip }}/32 alias to loopback (Twingate resource address)
+      Before=twingate-connector.service
+      After=network.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/sbin/ip addr add {{ lan_ip }}/32 dev lo
+      ExecStop=/sbin/ip addr del {{ lan_ip }}/32 dev lo
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/loopback-alias.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+
+- name: Flush handlers to reload systemd
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start loopback-alias service
+  ansible.builtin.systemd:
+    name: loopback-alias.service
+    enabled: true
+    state: started
+
+# ── Phase 3b: Deploy credentials ─────────────────────────────────────────────
+
+- name: Deploy connector.conf (Twingate credentials)
+  ansible.builtin.template:
+    src: connector.env.j2
+    dest: "{{ twingate_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart twingate-connector
+
+- name: Flush handlers to restart service with new credentials
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start twingate-connector service
+  ansible.builtin.systemd:
+    name: twingate-connector.service
+    enabled: true
+    state: started
+
+- name: Wait for twingate-connector to be active
+  ansible.builtin.command: systemctl is-active twingate-connector
+  register: tc_status
+  until: tc_status.rc == 0
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Remind operator to verify Twingate SSH before running router role
+  ansible.builtin.debug:
+    msg: >
+      Twingate connector is running. IMPORTANT: Verify that SSH through
+      Twingate is working from an external machine BEFORE running
+      --tags router. The router step will make eth0 a LAN port and
+      you will lose direct ethernet SSH to the Pi.

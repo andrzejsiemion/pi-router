@@ -1,0 +1,10 @@
+---
+twingate_network: ""          # override via secrets.yml
+twingate_access_token: ""     # override via secrets.yml
+twingate_refresh_token: ""    # override via secrets.yml
+
+twingate_service_name: twingate-connector
+twingate_config_dir: /etc/twingate
+twingate_env_path: /etc/twingate/connector.conf
+twingate_watchdog_interval: 30   # seconds between restart attempts on failure
+twingate_bind_interface: "{{ modem_interface | default('usb0') }}"

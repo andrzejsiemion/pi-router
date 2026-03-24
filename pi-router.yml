@@ -1,0 +1,26 @@
+---
+- name: Configure Raspberry Pi 5 — LTE internet sharing
+  hosts: garage
+  become: true
+
+  roles:
+    - role: slack_notify
+      tags: [slack_notify]
+
+    - role: waveshare_ups
+      tags: [waveshare_ups]
+
+    - role: modem
+      tags: [modem]
+
+    - role: twingate_connector
+      tags: [connector]
+
+    - role: docker
+      tags: [docker]
+
+    - role: speedtest
+      tags: [speedtest]
+
+    - role: router
+      tags: [router]

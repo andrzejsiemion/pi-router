@@ -135,7 +135,7 @@ Ping      min 28.0 / avg 35.4 / max 52.1 ms
 speed    # run a test immediately, print Download/Upload
 ```
 
-### `router` (not deployed yet)
+### `router`
 Configures eth0 as LAN gateway (static `192.168.10.1/24`), dnsmasq DHCP, nftables NAT.
 **Run only after Twingate SSH is confirmed working** — switching eth0 to router mode loses direct ethernet SSH.
 

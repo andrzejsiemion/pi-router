@@ -6,6 +6,7 @@ ups_critical_battery_threshold: 25         # percent — triggers shutdown
 ups_check_interval_sec: 30
 ups_current_deadband: 0.1           # amps — negative current below this = on battery (discharging)
 ups_battery_confirm_count: 2        # consecutive on-battery readings before sending alert
+ups_ac_off_alert_delay_sec: 300     # seconds continuously on battery before AC-off alert (suppresses brief dips)
 ups_rtc_wake_interval_sec: 300      # seconds — Pi wakes itself to check if AC is back after shutdown
 
 ups_script_path: /usr/local/lib/ups_monitor.py

@@ -8,14 +8,15 @@ Sends Slack notifications:
   4. AC power on         — mains restored
   5-7. Battery at 50/25/10% — one notification per threshold as battery drops
 
-State is persisted in {{ ups_state_dir }}/state.json to require
-{{ ups_battery_confirm_count }} consecutive readings before alerting
-and to suppress duplicate alerts until the condition clears.
+State is persisted in {{ ups_state_dir }}/state.json. AC-off alerts fire only
+after the outage persists {{ ups_ac_off_alert_delay_sec }}s (suppresses brief
+current dips); duplicate alerts are suppressed until the condition clears.
 """
 
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -30,6 +31,7 @@ WARN_THRESHOLDS = [{{ ups_battery_warn_thresholds | join(', ') }}]  # percent �
 CRITICAL_THRESHOLD = {{ ups_critical_battery_threshold }}           # percent — shutdown
 CURRENT_DEADBAND = {{ ups_current_deadband }}                       # amps
 CONFIRM_COUNT = {{ ups_battery_confirm_count }}
+AC_OFF_ALERT_DELAY = {{ ups_ac_off_alert_delay_sec }}               # seconds on battery before alerting
 RTC_WAKE_INTERVAL = {{ ups_rtc_wake_interval_sec }}
 SLACK_NOTIFY = "{{ slack_notify_script_path }}"
 STATE_FILE = Path("{{ ups_state_dir }}/state.json")
@@ -80,7 +82,7 @@ def load_state() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
     state = {
-        "on_battery_count": 0,
+        "on_battery_since": None,
         "on_battery_alert_sent": False,
         "critical_count": 0,
         "critical_alert_sent": False,
@@ -166,19 +168,20 @@ def main() -> None:
         state["critical_count"] = 0
 
     # ── Notification 3 & 4: AC power off / AC power on ───────────────────────
+    # Only alert once the outage has persisted AC_OFF_ALERT_DELAY seconds, so a
+    # brief current dip (fridge motor, charger settling) doesn't page us.
     if on_battery:
-        state["on_battery_count"] = state.get("on_battery_count", 0) + 1
-        if (
-            state["on_battery_count"] >= CONFIRM_COUNT
-            and not state.get("on_battery_alert_sent")
-        ):
+        if state.get("on_battery_since") is None:
+            state["on_battery_since"] = time.time()
+        elapsed = time.time() - state["on_battery_since"]
+        if elapsed >= AC_OFF_ALERT_DELAY and not state.get("on_battery_alert_sent"):
             notify(f"garage AC off — {soc}% ({voltage:.2f}V) battery")
             state["on_battery_alert_sent"] = True
     else:
         if state.get("on_battery_alert_sent"):
-            # Notification 4: AC power on
+            # Notification 4: AC power on (only if we actually alerted for the outage)
             notify(f"garage AC on — {voltage:.2f}V charging")
-        state["on_battery_count"] = 0
+        state["on_battery_since"] = None
         state["on_battery_alert_sent"] = False
 
     # ── Notifications 5-7: Battery level warnings ────────────────────────────

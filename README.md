@@ -163,6 +163,8 @@ All defaults in `roles/*/defaults/main.yml`. Key variables:
 
 ## Troubleshooting
 
+**Do not forget to fill/copy secret file**
+
 **usb0 has no IP:**
 ```bash
 journalctl -u NetworkManager -n 30 --no-pager

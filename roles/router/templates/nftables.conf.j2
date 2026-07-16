@@ -22,5 +22,9 @@ table inet filter {
 
         # Return traffic from internet back to LAN
         iifname "{{ modem_interface }}" oifname "{{ lan_interface }}" ct state established,related accept
+
+        # Wi-Fi hotspot forwarding (if active)
+        iifname "wlan0" oifname "{{ modem_interface }}" ct state new,established,related accept
+        iifname "{{ modem_interface }}" oifname "wlan0" ct state established,related accept
     }
 }

@@ -1,0 +1,33 @@
+#!/bin/bash
+# Managed by Ansible — do not edit manually
+# Called by hostapd_cli on station connect/disconnect events
+# Args: $1 = interface, $2 = event, $3 = MAC address
+
+IFACE="$1"
+EVENT="$2"
+MAC="$3"
+WEBHOOK_URL="{{ slack_webhook_url }}"
+HOSTNAME="garage"
+
+[ -z "$WEBHOOK_URL" ] && exit 0
+[ -z "$MAC" ] && exit 0
+
+TS=$(date '+%Y-%m-%d %H:%M')
+
+# Try to resolve hostname from dnsmasq leases
+DEVICE=$(awk -v mac="$MAC" 'tolower($2)==tolower(mac) {print $4}' /var/lib/misc/dnsmasq.leases)
+[ -z "$DEVICE" ] && DEVICE="$MAC"
+
+case "$EVENT" in
+    AP-STA-CONNECTED)
+        MSG="[$TS] $HOSTNAME wifi connected — $DEVICE ($MAC)"
+        ;;
+    AP-STA-DISCONNECTED)
+        MSG="[$TS] $HOSTNAME wifi disconnected — $DEVICE ($MAC)"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+curl -s -X POST "$WEBHOOK_URL" -H 'Content-type: application/json' -d "{\"text\": \"$MSG\"}" >/dev/null 2>&1

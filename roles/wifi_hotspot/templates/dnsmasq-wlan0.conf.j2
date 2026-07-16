@@ -1,0 +1,11 @@
+# Managed by Ansible — do not edit manually
+interface={{ wifi_interface }}
+bind-interfaces
+
+dhcp-range={{ wifi_dhcp_range_start }},{{ wifi_dhcp_range_end }},{{ wifi_dhcp_lease_time }}
+dhcp-option=option:router,{{ wifi_ip }}
+dhcp-option=option:dns-server,{{ wifi_dhcp_dns_server }}
+
+no-resolv
+server={{ wifi_dhcp_dns_server }}
+log-dhcp

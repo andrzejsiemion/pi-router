@@ -36,3 +36,6 @@
 
     - role: router
       tags: [router]
+
+    - role: wifi_hotspot
+      tags: [wifi_hotspot]

@@ -1,0 +1,24 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: restart hostapd
+  ansible.builtin.service:
+    name: hostapd
+    state: restarted
+
+- name: restart dnsmasq
+  ansible.builtin.service:
+    name: dnsmasq
+    state: restarted
+
+- name: reload nftables
+  ansible.builtin.service:
+    name: nftables
+    state: reloaded
+
+- name: reload NetworkManager
+  ansible.builtin.service:
+    name: NetworkManager
+    state: reloaded

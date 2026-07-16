@@ -1,0 +1,13 @@
+[Unit]
+Description=Wi-Fi station connect/disconnect notifier
+After=hostapd.service
+Requires=hostapd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/hostapd_cli -i {{ wifi_interface }} -a /usr/local/bin/wifi-notify.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

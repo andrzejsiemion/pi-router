@@ -1,0 +1,154 @@
+---
+- name: Install hostapd and iptables-persistent
+  ansible.builtin.apt:
+    name:
+      - hostapd
+      - iptables-persistent
+    state: present
+
+- name: Ensure NetworkManager does not manage wlan0
+  ansible.builtin.copy:
+    dest: /etc/NetworkManager/conf.d/unmanage-wlan0.conf
+    content: |
+      [keyfile]
+      unmanaged-devices=interface-name:{{ wifi_interface }}
+    mode: '0644'
+  notify: reload NetworkManager
+
+- name: Unmask hostapd service
+  ansible.builtin.systemd:
+    name: hostapd
+    masked: false
+
+- name: Deploy hostapd configuration
+  ansible.builtin.template:
+    src: hostapd.conf.j2
+    dest: /etc/hostapd/hostapd.conf
+    mode: '0600'
+  notify: restart hostapd
+
+- name: Set hostapd DAEMON_CONF
+  ansible.builtin.lineinfile:
+    path: /etc/default/hostapd
+    regexp: '^#?DAEMON_CONF='
+    line: 'DAEMON_CONF="/etc/hostapd/hostapd.conf"'
+    create: true
+    mode: '0644'
+
+- name: Unblock Wi-Fi (rfkill)
+  ansible.builtin.command: rfkill unblock wlan
+  changed_when: false
+
+- name: Assign static IP to wlan0 via dispatcher script
+  ansible.builtin.copy:
+    dest: /etc/NetworkManager/dispatcher.d/10-wlan0-ip
+    content: |
+      #!/bin/bash
+      # Managed by Ansible — do not edit manually
+      # Assign static IP to wlan0 for hostapd (NM does not manage it)
+      if [ "$1" = "{{ wifi_interface }}" ] || [ "$0" != "${0}" ]; then
+        ip addr show {{ wifi_interface }} | grep -q {{ wifi_ip }} || ip addr add {{ wifi_ip }}/{{ wifi_prefix }} dev {{ wifi_interface }}
+      fi
+    mode: '0755'
+
+- name: Assign static IP to wlan0 now
+  ansible.builtin.command: ip addr add {{ wifi_ip }}/{{ wifi_prefix }} dev {{ wifi_interface }}
+  register: ip_add
+  failed_when: "ip_add.rc != 0 and 'already assigned' not in ip_add.stderr and 'File exists' not in ip_add.stderr"
+  changed_when: ip_add.rc == 0
+
+- name: Deploy dnsmasq config for wlan0
+  ansible.builtin.template:
+    src: dnsmasq-wlan0.conf.j2
+    dest: /etc/dnsmasq.d/wlan0-hotspot.conf
+    mode: '0644'
+  notify: restart dnsmasq
+
+- name: Enable IP forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: true
+    reload: true
+
+- name: Ensure nftables.d directory exists
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    mode: '0755'
+
+- name: Deploy nftables rules for Wi-Fi NAT
+  ansible.builtin.template:
+    src: nftables-wifi.conf.j2
+    dest: /etc/nftables.d/wifi-hotspot.conf
+    mode: '0644'
+  register: nft_wifi
+
+- name: Load Wi-Fi nftables rules
+  ansible.builtin.command: nft -f /etc/nftables.d/wifi-hotspot.conf
+  when: nft_wifi.changed
+
+- name: Allow Wi-Fi forwarding in iptables (Docker compat)
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ wifi_interface }}"
+    out_interface: "{{ modem_interface }}"
+    ctstate: NEW,ESTABLISHED,RELATED
+    jump: ACCEPT
+    action: insert
+
+- name: Allow return traffic from internet to Wi-Fi in iptables
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ modem_interface }}"
+    out_interface: "{{ wifi_interface }}"
+    ctstate: ESTABLISHED,RELATED
+    jump: ACCEPT
+    action: insert
+
+- name: Save iptables rules
+  ansible.builtin.command: netfilter-persistent save
+  changed_when: false
+
+- name: Enable and start hostapd
+  ansible.builtin.systemd:
+    name: hostapd
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Ensure dnsmasq is running
+  ansible.builtin.systemd:
+    name: dnsmasq
+    state: started
+    enabled: true
+
+- name: Deploy Wi-Fi notify script
+  ansible.builtin.template:
+    src: wifi-notify.sh.j2
+    dest: /usr/local/bin/wifi-notify.sh
+    mode: '0755'
+
+- name: Deploy Wi-Fi notify systemd service
+  ansible.builtin.template:
+    src: wifi-notify.service.j2
+    dest: /etc/systemd/system/wifi-notify.service
+    mode: '0644'
+  notify: reload systemd
+
+- name: Enable and start wifi-notify service
+  ansible.builtin.systemd:
+    name: wifi-notify
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Show Wi-Fi hotspot info
+  ansible.builtin.debug:
+    msg: |
+      Wi-Fi hotspot active:
+        SSID: {{ wifi_ssid }}
+        Interface: {{ wifi_interface }}
+        IP: {{ wifi_ip }}/{{ wifi_prefix }}
+        DHCP range: {{ wifi_dhcp_range_start }}–{{ wifi_dhcp_range_end }}
+        NAT: {{ wifi_interface }} → {{ modem_interface }}

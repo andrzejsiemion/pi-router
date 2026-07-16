@@ -1,0 +1,22 @@
+# Managed by Ansible — do not edit manually
+# Wi-Fi hotspot NAT rules (included by main nftables.conf)
+
+table inet wifi_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat
+        oifname "{{ modem_interface }}" ip saddr {{ wifi_subnet }} masquerade
+    }
+}
+
+table inet wifi_filter {
+    chain forward {
+        type filter hook forward priority filter
+        policy accept
+
+        # Wi-Fi clients to internet
+        iifname "{{ wifi_interface }}" oifname "{{ modem_interface }}" ct state new,established,related accept
+
+        # Return traffic from internet to Wi-Fi clients
+        iifname "{{ modem_interface }}" oifname "{{ wifi_interface }}" ct state established,related accept
+    }
+}

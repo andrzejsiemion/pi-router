@@ -1,0 +1,17 @@
+# Managed by Ansible — do not edit manually
+interface={{ wifi_interface }}
+driver=nl80211
+
+ssid={{ wifi_ssid }}
+country_code={{ wifi_country_code }}
+hw_mode=g
+channel={{ wifi_channel }}
+ieee80211n=1
+ieee80211d=1
+
+ctrl_interface=/var/run/hostapd
+
+wpa=2
+wpa_passphrase={{ wifi_password }}
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP

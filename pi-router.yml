@@ -3,6 +3,18 @@
   hosts: garage
   become: true
 
+  pre_tasks:
+    - name: Set valid default locale (avoids Ansible controller locale errors)
+      ansible.builtin.copy:
+        dest: /etc/default/locale
+        content: |
+          LANG=C.UTF-8
+          LC_ALL=C.UTF-8
+        owner: root
+        group: root
+        mode: "0644"
+      tags: [always]
+
   roles:
     - role: slack_notify
       tags: [slack_notify]
